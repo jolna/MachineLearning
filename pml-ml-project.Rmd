@@ -1,0 +1,127 @@
+---
+title: "PML Fitbit Human Activity Recognition Report - ML Assignment"
+author: Ram Narayanan
+date: 5/12/2017
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+
+library(readr)
+library(caret)
+```
+
+## Summary
+The goal of this project is to predict the manner in which users do specific exercise using devices such as Jawbone Up, Nike FuelBand, and Fitbit. The outcome is based on the "classe" data available in the training data set. The model based on the training set is then used to predict 20 different test cases as shown in the report below
+
+### Acknowledgment
+The data used for this report was downloaded from 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+Following is the dataset and literature review as provided by the authors at this link
+ http://groupware.les.inf.puc-rio.br/har
+The  Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6.
+Cited by 2 (Google Scholar)
+
+
+### Data cleanup and preprocessing
+```{r Read data}
+training <- read_csv("pml-training.csv")
+dim(training)
+#str(training)
+#preProc <- preProcess(training, method = c("knnImpute"))
+```
+The preProcess call above produced following warning: "These variables have zero variances:    amplitude_yaw_dumbbell"
+On verification of amplitude_yaw_dumbbell, all values in it are "NA". Hence dropping this column and also removing user_name and new_window character columns does not seem to be relevant. on further investigation also removing timestamp columns that might not be relevant.
+
+```{r preprocess1}
+training <- training[,!(names(training) %in% c("amplitude_yaw_dumbbell","user_name","new_window"))]
+training <- training[ ,!(names(training) %in% names(training[,grep("timestamp", names(training))]))]
+#set all remmaining NA to 0
+training[is.na(training)] <- 0
+training$classe <- as.factor(training$classe)
+```
+
+There are some columns with numeric data that are defined as "character" type, those need to be converted to numeric datatype
+```{r preprocess 2}
+charTrain <- training[, sapply(training, class) == 'character']
+charTrain[is.na(charTrain)] <- 0
+charTrain <- lapply(charTrain, as.numeric)
+nonCharTrain <- training[, !(names(training) %in% names(charTrain))]
+training <- cbind(nonCharTrain, charTrain)
+```
+
+
+Checking for features with near zero variance, after verifying the features removing all from the training set
+```{r nsv}
+nsv <- nearZeroVar(training)
+training <- training[,-nsv]
+```
+Check for pairwise highly correlated featurer with a 80% cutoff.  This should
+further reduce the feature list to the desirable set.
+```{r correlation}
+set.seed(1000)
+corTrainNums <- findCorrelation(cor(training[,c(-55)]), .8)
+corTrainNums <- append(corTrainNums, c(55))
+corTrainNums
+```
+### Modelling and evaluation
+Remove all other highly correlated terms with those in the corTrainNums vector from training set.Partition training set provided to 70% actual trian and 30% validation set. The train set is then used to generate a train model.
+```{r train}
+training <- training[,corTrainNums]
+inTrain <- createDataPartition(y=training$classe,p=0.70,list=FALSE)
+train <- training[inTrain,]
+validation <- training[-inTrain,]
+```
+Since this is a classification problem, Classification and regression trees(CART) based RandomForest search is used to build a model. The model search incorporates 5 fold cross validation by evaluating the outcome "classe" with all the remaining features in the train dataset.
+```{r Randonforest}
+rfTrainFit <- train(classe ~ ., data=train, method="rf", 
+               trControl=trainControl(method = "cv", number = 5), na.action=na.exclude)
+
+valid.classe <- predict(rfTrainFit, validation)
+cm <- confusionMatrix(valid.classe, validation$classe)
+cm$byClass[,"Sensitivity"]
+cm$byClass[,"Specificity"]
+rfAccuracy <- cm$overall["Accuracy"]
+rfAccuracy
+lmC <- lm(as.numeric(valid.classe) ~ as.numeric(validation$classe))
+rflms <- summary(lmC)        
+```
+The RF model fit plot shows the error rate decreasing with the number of trees below. The plot shows the cross validated accuracy, followed by the class probabilty chart
+```{r RF plot}
+plot(rfTrainFit$finalModel)
+plot(rfTrainFit)
+pp <- extractProb(list(rfTrainFit))
+plotClassProbs(pp)
+```
+
+A Randomforest model prediction on the validation set based on the confusion matrix above produces a overall accuracy of <b>`r rfAccuracy`</b> and error of <b>`r rflms$sigma`</b> and R-Squared of <b>`r rflms$r.squared`</b>. A similar excercise with another CART based algorithm using "rpart" as shown below.
+
+```{r Rpart}
+rpartTrainFit <- train(classe ~ ., data=train, method="rpart", 
+                    trControl=trainControl(method = "cv", number = 5), na.action=na.exclude)
+rpvalid.classe <- predict(rpartTrainFit, validation)
+rpcm <- confusionMatrix(rpvalid.classe, validation$classe)
+rpcm$byClass[,"Sensitivity"]
+rpcm$byClass[,"Specificity"]
+rpcm$overall["Accuracy"]
+rplmC <- lm(as.numeric(rpvalid.classe) ~ as.numeric(validation$classe))
+summary(rplmC) 
+```
+### Conclusion and Test cases prediction.
+Baed on the summary above it is clear that the RandomForest with its better overall accuracy and R Squared value produces a better model. This model is now used to predict the classe outcome for the given Test set. The relavent features from the train set are retained in the test set.
+
+```{r TestSet Prediction}
+testing <- read_csv("pml-testing.csv")
+dim(testing)
+testing <- testing[,(names(testing) %in% names(training))]
+testing[is.na(testing)] <- 0
+testing <- lapply(testing, as.numeric)
+
+testing.classe <- predict(rfTrainFit, testing)
+testing.classe
+```
+The 20 different test cases predictions are shown above.The prediction values matched 90%
+with what was expected.
